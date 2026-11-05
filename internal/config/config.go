@@ -23,7 +23,7 @@ const (
 
 	HTTPReadTimeout       = "HTTP_READ_TIMEOUT"
 	HTTPReadHeaderTimeout = "HTTP_READ_HEADER_TIMEOUT"
-	HTTPWriteTimeout      = "HTTP_WRITE_TIMEOUT"
+	writeTimeoutEnv       = "HTTP_WRITE_TIMEOUT"
 	HTTPIdleTimeout       = "HTTP_IDLE_TIMEOUT"
 )
 
@@ -32,7 +32,8 @@ type Config struct {
 	LogLevel        slog.Level
 	ShutdownTimeout time.Duration
 
-	Database DatabaseConfig
+	Database  DatabaseConfig
+	Telemetry TelemetryConfig
 
 	ReadTimeout       time.Duration
 	ReadHeaderTimeout time.Duration
@@ -49,9 +50,10 @@ type DatabaseConfig struct {
 	QueryTimeout    time.Duration
 }
 
+type TelemetryConfig struct{ Endpoint, Protocol, Sampler string }
+
 func Load() (Config, error) {
 	var cfg Config
-	db := &cfg.Database
 	var err error
 
 	if cfg.HTTPAddr, err = required(HTTPAddr); err != nil {
@@ -76,37 +78,65 @@ func Load() (Config, error) {
 	if cfg.ReadHeaderTimeout, err = positiveDuration(HTTPReadHeaderTimeout); err != nil {
 		return Config{}, err
 	}
-	if cfg.WriteTimeout, err = positiveDuration(HTTPWriteTimeout); err != nil {
+	if cfg.WriteTimeout, err = positiveDuration(writeTimeoutEnv); err != nil {
 		return Config{}, err
 	}
 	if cfg.IdleTimeout, err = positiveDuration(HTTPIdleTimeout); err != nil {
 		return Config{}, err
 	}
 
-	if db.URL, err = required(DatabaseURL); err != nil {
+	if err := loadDatabase(&cfg.Database); err != nil {
 		return Config{}, err
+	}
+	if err := loadTelemetry(&cfg.Telemetry); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
+}
+
+func loadDatabase(db *DatabaseConfig) error {
+	var err error
+	if db.URL, err = required(DatabaseURL); err != nil {
+		return err
 	}
 	if db.MaxConns, err = int32Value(DatabaseMaxConns); err != nil {
-		return Config{}, err
+		return err
 	}
 	if db.MinConns, err = int32Value(DatabaseMinConns); err != nil {
-		return Config{}, err
+		return err
 	}
 	if db.MaxConns < 1 || db.MinConns < 0 || db.MinConns > db.MaxConns {
-		return Config{}, fmt.Errorf("invalid database pool sizes")
+		return fmt.Errorf("invalid database pool sizes")
 	}
 
 	if db.MaxConnLifetime, err = positiveDuration(DatabaseMaxConnLifetime); err != nil {
-		return Config{}, err
+		return err
 	}
 	if db.ConnectTimeout, err = positiveDuration(DatabaseConnectTimeout); err != nil {
-		return Config{}, err
+		return err
 	}
 	if db.QueryTimeout, err = positiveDuration(DatabaseQueryTimeout); err != nil {
-		return Config{}, err
+		return err
 	}
+	return nil
+}
 
-	return cfg, nil
+func loadTelemetry(cfg *TelemetryConfig) error {
+	var err error
+
+	if cfg.Endpoint, err = required("OTEL_EXPORTER_OTLP_ENDPOINT"); err != nil {
+		return err
+	}
+	if cfg.Protocol, err = required("OTEL_EXPORTER_OTLP_PROTOCOL"); err != nil {
+		return err
+	}
+	if cfg.Protocol != "grpc" && cfg.Protocol != "http/protobuf" {
+		return fmt.Errorf("invalid OTEL_EXPORTER_OTLP_PROTOCOL")
+	}
+	if cfg.Sampler, err = required("OTEL_TRACES_SAMPLER"); err != nil {
+		return err
+	}
+	return nil
 }
 
 func required(name string) (string, error) {
